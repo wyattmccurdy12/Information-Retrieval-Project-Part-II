@@ -2,8 +2,8 @@
 python main.py -q data/inputs/topics_1.json -d data/inputs/Answers.json -o data/outputs/ -r data/inputs/qrel_1.tsv
 '''
 
-
 import re
+import string
 from bs4 import BeautifulSoup
 from sentence_transformers import SentenceTransformer
 import json
