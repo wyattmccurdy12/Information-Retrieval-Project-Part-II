@@ -1,3 +1,8 @@
+'''
+python main.py -q data/inputs/topics_1.json -d data/inputs/Answers.json -o data/outputs/ -r data/inputs/qrel_1.tsv
+'''
+
+
 import re
 from bs4 import BeautifulSoup
 from sentence_transformers import SentenceTransformer
@@ -147,8 +152,8 @@ class ResultRetrieverBM25:
         return ' '.join(tags_list)
 
 class ResultRetrieverSentTrans:
-    def __init__(self, model_name):
-        self.model = SentenceTransformer(model_name)
+    def __init__(self):
+        self.model = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2')
 
     def encode(self, texts):
         return self.model.encode(texts)
@@ -208,7 +213,6 @@ def main():
     parser = argparse.ArgumentParser(description='Ranking and Re-Ranking System')
     parser.add_argument('-q', '--queries', required=True, help='Path to the queries file')
     parser.add_argument('-d', '--documents', required=True, help='Path to the documents file')
-    parser.add_argument('-be', '--bi_encoder', required=True, help='Bi-encoder model string')
     parser.add_argument('-o', '--outdir', required=True, help='Output directory for experiment results')
     parser.add_argument('-r', '--qrels', required=True, help='Path to the qrels file')
     args = parser.parse_args()
@@ -226,7 +230,7 @@ def main():
     bm25_retriever.preprocess_qrels()
     bm25_retriever.build_index()
 
-    sent_trans_retriever = ResultRetrieverSentTrans(args.bi_encoder)
+    sent_trans_retriever = ResultRetrieverSentTrans()
     
     # Function to process and encode queries and documents
     def process_and_encode(data_queries, data_documents):
