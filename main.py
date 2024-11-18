@@ -280,13 +280,32 @@ def main():
     write_results_to_tsv(initial_rankings, output_filename, model_type='simple', model_status='pretrained')
     print(f"Initial rankings have been computed and saved to {output_filename}.")
 
+    # Define a custom retriever for the sentence transformer model
+    class SentenceTransformerRetriever(pt.Transformer):
+        def __init__(self, encoded_queries, encoded_documents, processed_documents):
+            self.encoded_queries = encoded_queries
+            self.encoded_documents = encoded_documents
+            self.processed_documents = processed_documents
+
+        def transform(self, topics):
+            results = []
+            for query_id, query_embedding in zip(topics['qid'], self.encoded_queries):
+                scores = np.dot(self.encoded_documents, query_embedding)
+                ranked_doc_indices = np.argsort(scores)[::-1][:100]
+                for rank, doc_id in enumerate(ranked_doc_indices):
+                    results.append([query_id, 'Q0', list(self.processed_documents.keys())[doc_id], rank + 1, scores[doc_id], 'sent_trans'])
+            return pd.DataFrame(results, columns=['qid', 'Q0', 'docno', 'rank', 'score', 'system'])
+
+    # Create the sentence transformer retriever
+    sent_trans_retriever_pt = SentenceTransformerRetriever(encoded_queries, encoded_documents, processed_documents)
+
     # After building the index, we enter a new phase - retrieval.
     bm25 = pt.BatchRetrieve(bm25_retriever.index, wmodel='BM25')
 
     # Run experiment to compare BM25 and sentence transformer models
     print("Running experiment...")
     exp_sig = pt.Experiment(
-        [bm25], 
+        [bm25, sent_trans_retriever_pt], 
         bm25_retriever.queries, 
         bm25_retriever.qrels, 
         eval_metrics=["map", "ndcg", "recip_rank", "ndcg_cut_5", "ndcg_cut_10", "P.5", "P.10", "P.1000", "bpref"],
