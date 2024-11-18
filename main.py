@@ -1,71 +1,156 @@
-'''
-Wyatt McCurdy
-Information Retrieval Project Part II
-November 18, 2024
-Dr. Behrooz Mansouri
-
-In part II of this project, we move towards the use of sentence transformers 
-to rank inputs. This is expected to outperform models that were used
-in assignment part 1. We will use a bi-encoder, and skip many steps that we
-used in part 1. We will abstain from stopword removal and tokenization
-of inputs, and trust the sentence transformer to reliably encode input
-queries and documents. 
-
-The query-document pairs will be split into train/test/validation sets
-with a 80/10/10 split.
-
-Data in the data directory is in trec format. 
-documents: data/inputs/Answers.json
-queries: data/inputs/topics_1.json, topics_2.json
-qrels:   data/inputs/qrel_1.tsv (qrel_2.tsv is reserved by the instructor)
-
-models used: 
-sentence-transformers/all-MiniLM-L6-v2
-'''
-
 import re
 from bs4 import BeautifulSoup
 from sentence_transformers import SentenceTransformer
 import json
-from sklearn.model_selection import train_test_split
 import argparse
 import numpy as np
 from tqdm import tqdm
+import pyterrier as pt
+import pandas as pd
+import os
+import ast
 
-class Retriever:
-    """
-    A class to represent a retriever model which can be either a bi-encoder or a cross-encoder.
+class ResultRetrieverBM25:
+    def __init__(self, queries_path, documents_path, qrels_path, outdir):
+        self.queries_path = queries_path
+        self.documents_path = documents_path
+        self.qrels_path = qrels_path
+        self.outdir = outdir
+        self.queries = None
+        self.documents = None
+        self.qrels = None
+        self.index = None
 
-    Attributes:
-    model_type (str): The type of the model ('bi-encoder' or 'cross-encoder').
-    model (SentenceTransformer or CrossEncoder): The loaded model.
-    """
-    def __init__(self, model_type, model_name):
+    def load_data(self):
         """
-        Initializes the Retriever with the specified model type and name.
-
-        Parameters:
-        model_type (str): The type of the model ('bi-encoder' or 'cross-encoder').
-        model_name (str): The name of the model to load.
+        Load queries, documents, and qrels from JSON files into pandas DataFrames.
         """
-        self.model_type = model_type
-        if model_type == 'bi-encoder':
-            self.model = SentenceTransformer(model_name)
+        self.queries = pd.read_json(self.queries_path)
+        self.documents = pd.read_json(self.documents_path)
+        self.qrels = pd.read_csv(self.qrels_path, sep='\t', header=None)
+        self.qrels.columns = ['qid', 'q0', 'docno', 'relevance']
+
+    def preprocess_documents(self):
+        """
+        Preprocess documents to ensure they have the required fields for indexing.
+
+        Clean the body field by removing html tags.
+        """
+        # Rename 'Id' column to 'docno' and stringify the 'docno' value
+        self.documents.rename(columns={'Id': 'docno'}, inplace=True)
+        self.documents['docno'] = self.documents['docno'].astype(str)
+
+        # Apply clean_string_html
+        self.documents['text'] = self.documents['Text'].apply(self.clean_string_html)
+
+        # Remove punctuation
+        self.documents['text'] = self.documents['text'].apply(self.remove_punctuation)
+
+        # Drop 'Text' and 'Score' columns
+        self.documents.drop(columns=['Text', 'Score'], inplace=True)
+
+        # Save 100 rows of the dataframe to a tsv file
+        self.documents.head(100).to_csv('sample_docs.tsv', sep='\t', index=False)
+
+    def preprocess_queries(self):
+        """
+        Preprocess queries to ensure they have the required fields for retrieval.
+    
+        Clean the body field by removing html tags and punctuation.
+        Clean the title field by removing punctuation.
+        Clean the tags field by literally evaluating the stringified list and joining the tags.
+        """
+        # Preprocess title
+        self.queries['Title'] = self.queries['Title'].apply(self.remove_punctuation)
+
+        # Preprocess tags
+        self.queries['Tags'] = self.queries['Tags'].apply(self.get_tags_str)
+
+        # Rename 'Id' column to 'qid' and stringify the 'qid' value
+        self.queries.rename(columns={'Id': 'qid'}, inplace=True)
+        self.queries['qid'] = self.queries['qid'].astype(str)
+    
+        # Apply clean_string_html
+        self.queries['query'] = self.queries['Body'].apply(self.clean_string_html)
+    
+        # Remove punctuation
+        self.queries['query'] = self.queries['query'].apply(self.remove_punctuation)
+
+        # Add title and tags to the query text
+        self.queries['query'] = self.queries['Title'] + ' '  + self.queries['query'] + ' '  + self.queries['Tags']
+    
+        # Drop 'Body' column
+        self.queries.drop(columns=['Body'], inplace=True)
+    
+        # Save 100 rows of the dataframe to a tsv file
+        self.queries.head(100).to_csv('sample_queries.tsv', sep='\t', index=False)
+    
+    def preprocess_qrels(self):
+        """
+        Preprocess qrels to ensure they have the required fields for evaluation.
+        """
+
+        self.qrels['qid'] = self.qrels['qid'].astype(str)
+        self.qrels['docno'] = self.qrels['docno'].astype(str)
+
+    def remove_punctuation(self, text):
+        """
+        Replace punctuation in the given text with spaces.
+        """
+        translation_table = str.maketrans(string.punctuation, ' ' * len(string.punctuation))
+        return text.translate(translation_table)
+    
+    def build_index(self):
+        """
+        Initialize PyTerrier and build an index from the documents if it doesn't exist.
+        Otherwise, load the existing index.
+
+        This method checks if PyTerrier is started, initializes it if not,
+        creates an indexer, and indexes the documents using the 'text' field.
+        If the index directory already exists, it is loaded instead of being recreated.
+        """
+        if not pt.started():
+            pt.init()
+        
+        index_dir = "./index"
+        
+        if os.path.exists(index_dir):
+            print(f"Loading existing index from: {index_dir}")
+            self.index = pt.IndexFactory.of(index_dir)
         else:
-            raise ValueError("Invalid model type. Choose 'bi-encoder'.")
+            print(f"Creating new index at: {index_dir}")
+            os.makedirs(index_dir, exist_ok=True)
+            print(f"Created index directory: {index_dir}")
+
+            # Ensure the directory has read and write permissions
+            os.chmod(index_dir, 0o755)
+            print(f"Set read and write permissions for index directory: {index_dir}")
+            
+            indexer = pt.IterDictIndexer(index_dir, meta={'docno': 20, 'text': 4096}, stemmer='porter', stopwords='terrier')
+
+            # Index the documents using the DataFrame directly
+            self.index = indexer.index(self.documents.to_dict(orient='records'))
+
+    def clean_string_html(self, html_str):
+        '''
+        Given a string with html tags, return a string without the html tags.
+        '''
+        clean_text = re.sub(r'<[^>]+>', '', html_str)
+        return clean_text
+
+    def get_tags_str(self, tags_str):
+        '''
+        Given an input string that represents a python list, 
+        return a string with just the tags separated by spaces.
+        '''
+        tags_list = ast.literal_eval(tags_str)
+        return ' '.join(tags_list)
+
+class ResultRetrieverSentTrans:
+    def __init__(self, model_name):
+        self.model = SentenceTransformer(model_name)
 
     def encode(self, texts):
-        """
-        Encodes a list of texts using the bi-encoder model.
-
-        Parameters:
-        texts (list of str): The texts to encode.
-
-        Returns:
-        list: The encoded texts.
-        """
-        if self.model_type != 'bi-encoder':
-            raise ValueError("Encode method is only available for bi-encoder.")
         return self.model.encode(texts)
 
 def load_data(queries_path, documents_path):
@@ -84,30 +169,6 @@ def load_data(queries_path, documents_path):
     with open(queries_path, 'r') as f:
         queries = json.load(f)
     return documents, queries
-
-def split_data(queries, documents, test_size=0.2, val_size=0.1):
-    """
-    Splits the data into train, validation, and test sets.
-
-    Parameters:
-    queries (list): The list of queries.
-    documents (list): The list of documents.
-    test_size (float): The proportion of the dataset to include in the test split.
-    val_size (float): The proportion of the dataset to include in the validation split.
-
-    Returns:
-    tuple: A tuple containing the train, validation, and test sets.
-    """
-    # First split into train+val and test
-    queries_train_val, queries_test, documents_train_val, documents_test = train_test_split(
-        queries, documents, test_size=test_size, random_state=42)
-    
-    # Then split train+val into train and val
-    val_size_adjusted = val_size / (1 - test_size)  # Adjust val_size to account for the first split
-    queries_train, queries_val, documents_train, documents_val = train_test_split(
-        queries_train_val, documents_train_val, test_size=val_size_adjusted, random_state=42)
-    
-    return (queries_train, documents_train), (queries_val, documents_val), (queries_test, documents_test)
 
 def write_results_to_tsv(results, output_filename, model_type, model_status):
     """
@@ -147,8 +208,8 @@ def main():
     parser = argparse.ArgumentParser(description='Ranking and Re-Ranking System')
     parser.add_argument('-q', '--queries', required=True, help='Path to the queries file')
     parser.add_argument('-d', '--documents', required=True, help='Path to the documents file')
-    parser.add_argument('-be', '--bi_encoder', required=True, help='Bi-encoder model string')
-    parser.add_argument('-ft', '--finetuned', action='store_true', help='Indicate if the model is fine-tuned')
+    parser.add_argument('-o', '--outdir', required=True, help='Output directory for experiment results')
+    parser.add_argument('-r', '--qrels', required=True, help='Path to the qrels file')
     args = parser.parse_args()
 
     # Load data
@@ -156,13 +217,15 @@ def main():
     documents, queries = load_data(args.queries, args.documents)
     print("Data loaded successfully.")
 
-    # Split data into train, validation, and test sets
-    print("Splitting data into train, validation, and test sets...")
-    (train_queries, train_documents), (val_queries, val_documents), (test_queries, test_documents) = split_data(queries, documents)
-    print("Data split successfully.")
+    # Instantiate retrievers
+    bm25_retriever = ResultRetrieverBM25(args.queries, args.documents, args.qrels, args.outdir)
+    bm25_retriever.load_data()
+    bm25_retriever.preprocess_documents()
+    bm25_retriever.preprocess_queries()
+    bm25_retriever.preprocess_qrels()
+    bm25_retriever.build_index()
 
-    # Instantiate retriever
-    bi_encoder_retriever = Retriever('bi-encoder', args.bi_encoder)
+    sent_trans_retriever = ResultRetrieverSentTrans('sentence-transformers/all-MiniLM-L6-v2')
     
     # Function to process and encode queries and documents
     def process_and_encode(data_queries, data_documents):
@@ -175,7 +238,7 @@ def main():
             merged_query = f"{title} {body} {tags}"
             processed_queries.append((query_id, merged_query))
         
-        encoded_queries = bi_encoder_retriever.encode([q[1] for q in processed_queries])
+        encoded_queries = sent_trans_retriever.encode([q[1] for q in processed_queries])
         
         processed_documents = {}
         for doc in tqdm(data_documents, desc="Processing documents"):
@@ -183,45 +246,54 @@ def main():
             text = remove_html_tags(doc['Text'])
             processed_documents[doc_id] = text
         
-        encoded_documents = bi_encoder_retriever.encode(list(processed_documents.values()))
+        encoded_documents = sent_trans_retriever.encode(list(processed_documents.values()))
         
         return processed_queries, encoded_queries, processed_documents, encoded_documents
 
-    # Process and encode train, validation, and test sets
-    print("Processing and encoding train set...")
-    train_processed_queries, train_encoded_queries, train_processed_documents, train_encoded_documents = process_and_encode(train_queries, train_documents)
-    print("Processing and encoding validation set...")
-    val_processed_queries, val_encoded_queries, val_processed_documents, val_encoded_documents = process_and_encode(val_queries, val_documents)
-    print("Processing and encoding test set...")
-    test_processed_queries, test_encoded_queries, test_processed_documents, test_encoded_documents = process_and_encode(test_queries, test_documents)
+    # Process and encode queries and documents
+    print("Processing and encoding queries and documents...")
+    processed_queries, encoded_queries, processed_documents, encoded_documents = process_and_encode(queries, documents)
 
     # Function to perform initial ranking
     def perform_initial_ranking(processed_queries, encoded_queries, encoded_documents, processed_documents):
         initial_rankings = {}
         for query_id, query_text in tqdm(processed_queries, desc="Ranking queries"):
-            query_embedding = bi_encoder_retriever.encode([query_text])[0]
+            query_embedding = sent_trans_retriever.encode([query_text])[0]
             scores = np.dot(encoded_documents, query_embedding)
             ranked_doc_indices = np.argsort(scores)[::-1][:100]
             initial_rankings[query_id] = [(list(processed_documents.keys())[doc_id], scores[doc_id]) for doc_id in ranked_doc_indices]
         return initial_rankings
 
-    # Perform initial ranking for validation and test sets
-    print("Performing initial ranking for validation set...")
-    val_initial_rankings = perform_initial_ranking(val_processed_queries, val_encoded_queries, val_encoded_documents, val_processed_documents)
-    print("Performing initial ranking for test set...")
-    test_initial_rankings = perform_initial_ranking(test_processed_queries, test_encoded_queries, test_encoded_documents, test_processed_documents)
+    # Perform initial ranking
+    print("Performing initial ranking...")
+    initial_rankings = perform_initial_ranking(processed_queries, encoded_queries, encoded_documents, processed_documents)
 
     # Extract topic number from queries file name
     topic_number = args.queries.split('_')[-1].split('.')[0]
 
-    # Determine output filenames
-    val_output_filename = f"result_bi_val{'_ft' if args.finetuned else ''}_{topic_number}.tsv"
-    test_output_filename = f"result_bi_test{'_ft' if args.finetuned else ''}_{topic_number}.tsv"
+    # Determine output filename
+    output_filename = f"result_bi_{topic_number}.tsv"
 
     # Write initial rankings to TSV
-    write_results_to_tsv(val_initial_rankings, val_output_filename, model_type='simple', model_status='finetuned' if args.finetuned else 'pretrained')
-    write_results_to_tsv(test_initial_rankings, test_output_filename, model_type='simple', model_status='finetuned' if args.finetuned else 'pretrained')
-    print(f"Initial rankings have been computed and saved to {val_output_filename} and {test_output_filename}.")
+    write_results_to_tsv(initial_rankings, output_filename, model_type='simple', model_status='pretrained')
+    print(f"Initial rankings have been computed and saved to {output_filename}.")
+
+    # After building the index, we enter a new phase - retrieval.
+    bm25 = pt.BatchRetrieve(bm25_retriever.index, wmodel='BM25')
+
+    print("Running experiment...")
+    exp_sig = pt.Experiment(
+        [bm25], 
+        bm25_retriever.queries, 
+        bm25_retriever.qrels, 
+        eval_metrics=["map", "ndcg", "recip_rank", "ndcg_cut_5", "ndcg_cut_10", "P.5", "P.10", "P.1000", "bpref"],
+        save_dir=args.outdir, 
+        verbose=True, 
+        baseline=0,
+        significance_test="t-test"
+    )
+
+    print(exp_sig)
 
 if __name__ == "__main__":
     main()
