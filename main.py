@@ -4,7 +4,6 @@ python main.py -q data/inputs/topics_1.json -d data/inputs/Answers.json -o data/
 
 import re
 import string
-from bs4 import BeautifulSoup
 from sentence_transformers import SentenceTransformer
 import json
 import argparse
@@ -192,7 +191,7 @@ def write_results_to_tsv(results, output_filename, model_type, model_status):
 
 def remove_html_tags(text):
     """
-    Remove HTML tags from the input text using BeautifulSoup.
+    Remove HTML tags from the input text using regular expressions.
 
     Parameters:
     text (str): The text from which to remove HTML tags.
@@ -200,10 +199,8 @@ def remove_html_tags(text):
     Returns:
     str: The text with HTML tags removed.
     """
-    soup = BeautifulSoup(text, "html.parser")
-    text = soup.get_text()
-    text = re.sub(r"\\", "", text)
-    return text
+    clean = re.compile('<.*?>')
+    return re.sub(clean, '', text)
 
 def main():
     """
