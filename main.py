@@ -208,6 +208,7 @@ def main():
     parser = argparse.ArgumentParser(description='Ranking and Re-Ranking System')
     parser.add_argument('-q', '--queries', required=True, help='Path to the queries file')
     parser.add_argument('-d', '--documents', required=True, help='Path to the documents file')
+    parser.add_argument('-be', '--bi_encoder', required=True, help='Bi-encoder model string')
     parser.add_argument('-o', '--outdir', required=True, help='Output directory for experiment results')
     parser.add_argument('-r', '--qrels', required=True, help='Path to the qrels file')
     args = parser.parse_args()
@@ -225,7 +226,7 @@ def main():
     bm25_retriever.preprocess_qrels()
     bm25_retriever.build_index()
 
-    sent_trans_retriever = ResultRetrieverSentTrans('sentence-transformers/all-MiniLM-L6-v2')
+    sent_trans_retriever = ResultRetrieverSentTrans(args.bi_encoder)
     
     # Function to process and encode queries and documents
     def process_and_encode(data_queries, data_documents):
@@ -281,6 +282,7 @@ def main():
     # After building the index, we enter a new phase - retrieval.
     bm25 = pt.BatchRetrieve(bm25_retriever.index, wmodel='BM25')
 
+    # Run experiment to compare BM25 and sentence transformer models
     print("Running experiment...")
     exp_sig = pt.Experiment(
         [bm25], 
@@ -289,7 +291,7 @@ def main():
         eval_metrics=["map", "ndcg", "recip_rank", "ndcg_cut_5", "ndcg_cut_10", "P.5", "P.10", "P.1000", "bpref"],
         save_dir=args.outdir, 
         verbose=True, 
-        baseline=0,
+        baseline=0,  # BM25 is the baseline model
         significance_test="t-test"
     )
 
