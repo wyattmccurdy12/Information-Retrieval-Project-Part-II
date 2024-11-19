@@ -1,5 +1,5 @@
 '''
-python main.py -q data/inputs/topics_1.json -d data/inputs/Answers.json -o data/outputs/ -r data/inputs/qrel_1.tsv
+python main.py -q data/inputs/topics_1.json -d data/inputs/Answers.json -o data/outputs/
 '''
 
 import re
@@ -15,24 +15,20 @@ import os
 import ast
 
 class ResultRetrieverBM25:
-    def __init__(self, queries_path, documents_path, qrels_path, outdir):
+    def __init__(self, queries_path, documents_path, outdir):
         self.queries_path = queries_path
         self.documents_path = documents_path
-        self.qrels_path = qrels_path
         self.outdir = outdir
         self.queries = None
         self.documents = None
-        self.qrels = None
         self.index = None
 
     def load_data(self):
         """
-        Load queries, documents, and qrels from JSON files into pandas DataFrames.
+        Load queries and documents from JSON files into pandas DataFrames.
         """
         self.queries = pd.read_json(self.queries_path)
         self.documents = pd.read_json(self.documents_path)
-        self.qrels = pd.read_csv(self.qrels_path, sep='\t', header=None)
-        self.qrels.columns = ['qid', 'q0', 'docno', 'relevance']
 
     def preprocess_documents(self):
         """
@@ -88,14 +84,6 @@ class ResultRetrieverBM25:
     
         # Save 100 rows of the dataframe to a tsv file
         self.queries.head(100).to_csv('sample_queries.tsv', sep='\t', index=False)
-    
-    def preprocess_qrels(self):
-        """
-        Preprocess qrels to ensure they have the required fields for evaluation.
-        """
-
-        self.qrels['qid'] = self.qrels['qid'].astype(str)
-        self.qrels['docno'] = self.qrels['docno'].astype(str)
 
     def remove_punctuation(self, text):
         """
@@ -211,7 +199,6 @@ def main():
     parser.add_argument('-q', '--queries', required=True, help='Path to the queries file')
     parser.add_argument('-d', '--documents', required=True, help='Path to the documents file')
     parser.add_argument('-o', '--outdir', required=True, help='Output directory for experiment results')
-    parser.add_argument('-r', '--qrels', required=True, help='Path to the qrels file')
     args = parser.parse_args()
 
     # Load data
@@ -220,11 +207,10 @@ def main():
     print("Data loaded successfully.")
 
     # Instantiate retrievers
-    bm25_retriever = ResultRetrieverBM25(args.queries, args.documents, args.qrels, args.outdir)
+    bm25_retriever = ResultRetrieverBM25(args.queries, args.documents, args.outdir)
     bm25_retriever.load_data()
     bm25_retriever.preprocess_documents()
     bm25_retriever.preprocess_queries()
-    bm25_retriever.preprocess_qrels()
     bm25_retriever.build_index()
 
     sent_trans_retriever = ResultRetrieverSentTrans()
