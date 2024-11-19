@@ -61,7 +61,7 @@ def evaluate_results(qrels, results):
         dict: A dictionary containing the aggregated evaluation metrics.
         pd.DataFrame: A DataFrame containing the full evaluation metrics for each query.
     """
-    evaluator = pytrec_eval.RelevanceEvaluator(qrels, {'P.1', 'P.5', 'P.10', 'ndcg', 'ndcg_cut.10', 'recip_rank', 'map'})
+    evaluator = pytrec_eval.RelevanceEvaluator(qrels, {'P.1', 'P.5', 'P.10', 'ndcg', 'ndcg_cut.10', 'recip_rank', 'map', 'bpref'})
     metrics = evaluator.evaluate(results)
     
     aggregated_metrics = {metric: 0.0 for metric in metrics[next(iter(metrics))].keys()}
