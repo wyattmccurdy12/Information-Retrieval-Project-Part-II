@@ -312,7 +312,6 @@ def main():
         save_dir=args.outdir, 
         verbose=True, 
         baseline=0,  # BM25 is the baseline model
-        significance_test="t-test"
     )
 
     print(exp_sig)
